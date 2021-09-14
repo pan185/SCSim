@@ -31,7 +31,9 @@ def gen_TRNG_bistream(length, mode='TRNG'):
         return bitstream
 
     elif mode == 'dff':
-        bitstream = [0] * length
+        bitstream = np.zeros(length) 
+
+        bitstream = [0 for i in range(length)] 
         for i in range(length): 
             if i % 2 == 1: bitstream[i] = 1
         return bitstream
@@ -39,7 +41,7 @@ def gen_TRNG_bistream(length, mode='TRNG'):
     elif mode == 'lfsr':
         bitwidth = int(np.log2(length))
         polylist = LFSR().get_fpolyList(m=bitwidth)
-        poly = polylist[np.random.randint(0, len(polylist), 1)[0]]
+        poly = polylist[np.random.randint(0, len(polylist), 1)[0]] # random seed, random fpoly
         L = LFSR(fpoly=poly,initstate ='random')
         #seq = L.runFullCycle()
         seq = L.runKCycle(length)
@@ -50,6 +52,19 @@ def gen_TRNG_bistream(length, mode='TRNG'):
     else:
         raise Exception(f"Mode {mode} not found!")
 
+def get_lfsr_seq(bitwidth=8):
+    polylist = LFSR().get_fpolyList(m=bitwidth)
+    poly = polylist[np.random.randint(0, len(polylist), 1)[0]]
+    L = LFSR(fpoly=poly,initstate ='random')
+    lfsr_seq = []
+    for i in range(2**bitwidth):
+        value = 0
+        for j in range(bitwidth):
+            value = value + L.state[j]*2**(bitwidth-1-j)
+        lfsr_seq.append(value)
+        L.next()
+    return lfsr_seq
+    
 class Bitstream:
     """
     Get bistream result from ANDing n bitstreams

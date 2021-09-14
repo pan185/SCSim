@@ -214,24 +214,81 @@ def compute_err(num_decimal, globalVar, verbose=False, scheme='majority', mode='
         err = abs(expected_freq - freq)
         if verbose: print(util.colorText.CGREEN + f'Result: {freq}, Expecting: {expected_freq}, err: {err}         (mult={num_mult_op}, plus={num_plus_op})' + util.colorText.CEND)
         return err, num_mult_op, num_plus_op
+    if scheme =='gaines':
+        A = []
+        for i in range(globalVar.PRECISION_BITS):
+            A.append(util.gen_TRNG_bistream(globalVar.TRNG_BITSTREAM_LENGTH, mode))
+        B = []
+        for j in range(globalVar.PRECISION_BITS):
+            Bj = A[j]
+            for i in range(j):
+                if j != 0:
+                    for t in range(len(A[i])): Bj[t] &= ~A[i][t]
+            B.append(Bj)
+        
+        stream = [0] * globalVar.TRNG_BITSTREAM_LENGTH
+        for index in range(len(num_binary)):
+            if num_binary[index] == '1' or num_binary[index] == 1:
+                for i in range(globalVar.TRNG_BITSTREAM_LENGTH):
+                    stream[i] = stream[i] | B[index][i]
+        
+        num1 = util.Bitstream.count_num_1s(stream)
+        freq = num1 / globalVar.TRNG_BITSTREAM_LENGTH
+        err = abs(expected_freq - freq)
+        if verbose: print(util.colorText.CGREEN + f'Result: {freq}, Expecting: {expected_freq}, err: {err}' + util.colorText.CEND)
+        return err, None, None
+    if scheme == 'comparator':
+        if 2**globalVar.PRECISION_BITS != globalVar.TRNG_BITSTREAM_LENGTH:
+            raise Exception('Only full length lfsr+comparator is supported so far!')
+        if mode == 'lfsr':
+            lfsr_sequence = util.get_lfsr_seq(8)
+        elif mode == 'TRNG':
+            lfsr_sequence = []
+            for i in range(globalVar.TRNG_BITSTREAM_LENGTH):
+                trng_bs = util.gen_TRNG_bistream(globalVar.PRECISION_BITS, 'TRNG')
+                index_val = globalVar.PRECISION_BITS-1
+                decimal_val = 0
+                for j in trng_bs:
+                    if j == '1' or j == 1: decimal_val += 2**index_val
+                    index_val -= 1
+
+                lfsr_sequence.append(decimal_val)
+        else:
+            raise Exception(util.colorText.CRED+ f"Warning: using comparator scheme but {mode} mode!"+util.colorText.CEND)
+        stochastic_bs = [0] * (2**globalVar.PRECISION_BITS)
+        index = 0
+        for i in lfsr_sequence:
+            if num_decimal > i: stochastic_bs[index] = 1
+            index += 1
+
+        num1 = util.Bitstream.count_num_1s(stochastic_bs)
+        freq = num1 / globalVar.TRNG_BITSTREAM_LENGTH
+        err = abs(expected_freq - freq)
+        if verbose: print(util.colorText.CGREEN + f'Result: {freq}, Expecting: {expected_freq}, err: {err}' + util.colorText.CEND)
+        return err, None, None
 
     else:
         sys.exit(util.colorText.CRED + f'Error: unknown scheme {scheme}!' + util.colorText.CEND)
 
 def dump_stats(avg_err, max_err, scheme, mode):
-    f = open(f"result/Jeavons/scaling_analysis/avg_err_{scheme}_{mode}.txt", "a")
+    name1 = f"result/Jeavons/scaling_analysis/avg_err_{scheme}_{mode}.txt"
+    name2 = f"result/Jeavons/scaling_analysis/max_err_{scheme}_{mode}.txt"
+    f = open(name1, "a")
     f.write(str(avg_err)+'\n')
     f.close()
 
-    f = open(f"result/Jeavons/scaling_analysis/max_err_{scheme}_{mode}.txt", "a")
+    f = open(name2, "a")
     f.write(str(max_err)+'\n')
     f.close()
+    print(f'Dumped stats at {name1} and {name2}')
 
 def dump_vec(arr, scheme, cycle, prec, mode):
-    f = open(f"result/Jeavons/{scheme}_{prec}_M_{cycle}_cycle_{mode}_avg_err.txt", "a")
+    name = f"result/Jeavons/{scheme}_{prec}_M_{cycle}_cycle_{mode}_avg_err.txt"
+    f = open(name, "a")
     for ele in arr:
         f.write(str(ele)+'\n')
     f.close()
+    print(f'Dumped vector at {name}')
 
 def main(raw_args=None):
     #############
@@ -242,7 +299,7 @@ def main(raw_args=None):
     parser.add_argument('--prec', type=int, default=None, action='store', help='Set PRECISON_BITS')
     parser.add_argument('--len', type=int, default=None, action='store', help='Set TRNG_BITSTREAM_LENGTH')
     parser.add_argument('--iter', type=int, default=None, action='store', help='Set ITER')
-    parser.add_argument('--scheme', type=str, default='majority', action='store', choices=['majority', 'other', 'two_min_term', 'plus_multiply', 'plus_multiply_inverse'], help='Set scheme name')
+    parser.add_argument('--scheme', type=str, default='majority', action='store', choices=['majority', 'other', 'two_min_term', 'plus_multiply', 'plus_multiply_inverse', 'gaines', 'comparator'], help='Set scheme name')
     parser.add_argument('--mode', type=str, default='TRNG', action='store', choices=['TRNG', 'dff', 'lfsr'], help='Set RNG mode')
     parser.add_argument('--progress', default=False, action='store_true', help='Print progress')
     args = parser.parse_args(raw_args)
@@ -356,7 +413,7 @@ def main(raw_args=None):
         axs.grid()
         axs.text(0.1, 0.5, f'avg={"{:.5f}".format(overall_avg_err)}, max={max_err}', horizontalalignment='left', verticalalignment='center', transform=axs.transAxes)
         axs.set_title("L1 Error Profile")
-        plt.setp(axs, xlabel='Binary value x[3:0]')
+        plt.setp(axs, xlabel=f'Binary value x[{globalVar.PRECISION_BITS-1}:0]')
         plt.setp(axs, ylabel='avg L1 error')
         plt.figtext(0, 0, f"", ha="left", fontsize=7)
         plt.savefig(f'result/Jeavons/{args.scheme}_{globalVar.PRECISION_BITS}_M_{globalVar.TRNG_BITSTREAM_LENGTH}_cycle_{args.mode}.png')

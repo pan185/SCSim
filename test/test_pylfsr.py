@@ -26,4 +26,5 @@ def get_rand_bs(length=256):
     #result = L.test_properties(verbose=2)
     return seq
 
-print((get_rand_bs(256)))
+#print((get_rand_bs(256)))
+print(get_lfsr_seq(8))
