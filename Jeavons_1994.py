@@ -3,7 +3,17 @@ import matplotlib.pyplot as plt
 import gc
 import argparse
 import sys
+sys.path.append('/Users/zhewenpan/Repo/SCSim')
 import util
+import torch
+import trng
+
+SEGMENT_ENTROPY = 1000 # Use a relatively low number in QUAC-TRNG paper
+SEGMENT_BITLINE_CT = 64 * (2**10) # per 64K bitlines per row
+BITLINE_ENTROPY_AVG = SEGMENT_ENTROPY / SEGMENT_BITLINE_CT
+ENTROPYBLK_BITLINE_CT_AVG = 256/BITLINE_ENTROPY_AVG
+SIB_AVG = SEGMENT_BITLINE_CT/ENTROPYBLK_BITLINE_CT_AVG
+BIAS_CONSTANT = 0.9
 
 class Module:
     # index = 0
@@ -12,9 +22,9 @@ class Module:
     # x_i = -555
     # y_o = -333
 
-    def __init__(self, index, x, globalVar, mode):
+    def __init__(self, index, x, globalVar, mode, entropy_sources):
         self.index = index
-        self.r_i = util.gen_TRNG_bistream(globalVar.PRECISION_BITS + globalVar.TRNG_BITSTREAM_LENGTH, mode)
+        self.r_i = util.gen_TRNG_bistream(globalVar.PRECISION_BITS + globalVar.TRNG_BITSTREAM_LENGTH, mode, entropy_sources)
 
         if (self.index == 0): self.y_i = 0
         else: self.y_i = -999
@@ -122,7 +132,9 @@ class Structure:
         
         # TODO: take out when stop debugging
         #if cur_cycle < 6: self.print_info(cur_cycle)
-    
+    def get_sn(self):
+        return self.sn
+
     def post_processing_yo(self, globalVar):
         bad_ct = 0
         one_ct = 0
@@ -134,6 +146,8 @@ class Structure:
 
         if bad_ct != globalVar.PRECISION_BITS: raise Exception(f'Something went wrong! bad_ct={bad_ct}')
 
+        trimed_sn = self.sn[globalVar.PRECISION_BITS:]
+        self.sn = trimed_sn
         # TODO: remove debug msg
         #print(f'#1={one_ct}, #bad={bad_ct}, len={len(self.sn)}')
 
@@ -144,7 +158,128 @@ class Structure:
         for i in range(self.len):
             self.M[i].delete_M()
 
-def compute_err(num_decimal, globalVar, verbose=False, scheme='majority', mode='TRNG'):
+class SNG(torch.nn.Module):
+    """
+    
+    """
+    def __init__(self,
+                 globalVar,
+                 scheme='majority',
+                 mode='TRNG'):
+        super(SNG, self).__init__()
+        self.scheme = scheme
+        self.mode = mode
+        self.globalVar=globalVar
+
+    def forward(self, num_decimal, entropy_sources):
+        ########################
+        # Compute binary number
+        ########################
+        if num_decimal > 2**self.globalVar.PRECISION_BITS: 
+            raise Exception(f"Specified decimal value {num_decimal} is too large. Max is {2**self.globalVar.PRECISION_BITS - 1}.")
+        expected_freq = num_decimal/2**self.globalVar.PRECISION_BITS
+
+        num_binary = bin(num_decimal)
+        num_binary = num_binary[2:]
+        if len(num_binary) < self.globalVar.PRECISION_BITS:
+            num_binary = num_binary.zfill(self.globalVar.PRECISION_BITS)
+        
+        ###############################
+        # Compute error based on scheme
+        ###############################`
+        if self.scheme == 'majority' or self.scheme == 'two_min_term' or self.scheme == "other":
+            S = Structure(self.globalVar.PRECISION_BITS, num_binary, self.globalVar, self.mode)
+            for cyc in range(self.globalVar.PRECISION_BITS + self.globalVar.TRNG_BITSTREAM_LENGTH):
+                S.propagate_y_value(cyc, False, self.scheme)
+            S.post_processing_yo(self.globalVar)
+            sn = S.get_sn()
+            
+            return sn
+        if 'plus_multiply' in self.scheme:
+            
+            # inverse binary if needed
+            inverse = False
+            if self.scheme == 'plus_multiply_inverse':
+                if num_binary[0] == '1' and util.Bitstream.count_num_1s(num_binary) != 1:
+                    # any binary greater than 0.5, inverse it
+                    inverse = True
+                    num_binary = util.Bitstream.get_inverse(num_binary)
+
+            found_first = False
+            index = 0
+
+            num_mult_op = 0
+            num_plus_op = 0
+
+            bs_res = ['0'] * self.globalVar.TRNG_BITSTREAM_LENGTH
+            bs_res = ''.join(bs_res)
+
+            for bit in num_binary:
+                if bit == '1':
+                    if found_first: # If not processing the first 1 in fixed point representation
+                        bs_new = util.Bitstream.get_anded_bistream(index+1, self.globalVar)
+                        num_mult_op += (index + 1)
+                        bs_res = util.Bitstream.get_ored_bistream(bs_res, bs_new)
+                        num_plus_op += 1
+                    else:
+                        bs_res = util.Bitstream.get_anded_bistream(index+1, self.globalVar)
+                        num_mult_op += index + 1
+                    found_first = True
+                index += 1
+            
+            # if inverted then inverse it back
+            if inverse:
+                bs_res = util.Bitstream.get_inverse(bs_res)
+
+            return bs_res
+        if self.scheme =='gaines':
+            A = []
+            for i in range(self.globalVar.PRECISION_BITS):
+                A.append(util.gen_TRNG_bistream(self.globalVar.TRNG_BITSTREAM_LENGTH, self.mode, entropy_sources))
+            B = []
+            for j in range(self.globalVar.PRECISION_BITS):
+                Bj = A[j]
+                for i in range(j):
+                    if j != 0:
+                        for t in range(len(A[i])): Bj[t] &= ~A[i][t]
+                B.append(Bj)
+            
+            stream = [0] * self.globalVar.TRNG_BITSTREAM_LENGTH
+            for index in range(len(num_binary)):
+                if num_binary[index] == '1' or num_binary[index] == 1:
+                    for i in range(self.globalVar.TRNG_BITSTREAM_LENGTH):
+                        stream[i] = stream[i] | B[index][i]
+            
+            return stream
+        if self.scheme == 'comparator':
+            if 2**self.globalVar.PRECISION_BITS != self.globalVar.TRNG_BITSTREAM_LENGTH:
+                raise Exception('Only full length lfsr+comparator is supported so far!')
+            if self.mode == 'lfsr':
+                lfsr_sequence = util.get_lfsr_seq(8)
+            elif self.mode == 'TRNG':
+                lfsr_sequence = []
+                for i in range(self.globalVar.TRNG_BITSTREAM_LENGTH):
+                    trng_bs = util.gen_TRNG_bistream(self.globalVar.PRECISION_BITS, 'TRNG')
+                    index_val = self.globalVar.PRECISION_BITS-1
+                    decimal_val = 0
+                    for j in trng_bs:
+                        if j == '1' or j == 1: decimal_val += 2**index_val
+                        index_val -= 1
+
+                    lfsr_sequence.append(decimal_val)
+            else:
+                raise Exception(util.colorText.CRED+ f"Warning: using comparator scheme but {self.mode} mode!"+util.colorText.CEND)
+            stochastic_bs = [0] * (2**self.globalVar.PRECISION_BITS)
+            index = 0
+            for i in lfsr_sequence:
+                if num_decimal > i: stochastic_bs[index] = 1
+                index += 1
+            return stochastic_bs
+
+        else:
+            sys.exit(util.colorText.CRED + f'Error: unknown scheme {self.scheme}!' + util.colorText.CEND)
+
+def compute_err(num_decimal, globalVar, verbose=False, scheme='majority', mode='TRNG', entropy_sources=None):
     ########################
     # Compute binary number
     ########################
@@ -217,7 +352,7 @@ def compute_err(num_decimal, globalVar, verbose=False, scheme='majority', mode='
     if scheme =='gaines':
         A = []
         for i in range(globalVar.PRECISION_BITS):
-            A.append(util.gen_TRNG_bistream(globalVar.TRNG_BITSTREAM_LENGTH, mode))
+            A.append(util.gen_TRNG_bistream(globalVar.TRNG_BITSTREAM_LENGTH, mode, entropy_sources))
         B = []
         for j in range(globalVar.PRECISION_BITS):
             Bj = A[j]
@@ -226,6 +361,8 @@ def compute_err(num_decimal, globalVar, verbose=False, scheme='majority', mode='
                     for t in range(len(A[i])): Bj[t] &= ~A[i][t]
             B.append(Bj)
         
+        print(len(B))
+        print(len(B[0]))
         stream = [0] * globalVar.TRNG_BITSTREAM_LENGTH
         for index in range(len(num_binary)):
             if num_binary[index] == '1' or num_binary[index] == 1:
@@ -264,7 +401,15 @@ def compute_err(num_decimal, globalVar, verbose=False, scheme='majority', mode='
         num1 = util.Bitstream.count_num_1s(stochastic_bs)
         freq = num1 / globalVar.TRNG_BITSTREAM_LENGTH
         err = abs(expected_freq - freq)
-        if verbose: print(util.colorText.CGREEN + f'Result: {freq}, Expecting: {expected_freq}, err: {err}' + util.colorText.CEND)
+        if verbose: 
+            if err > 0.1: 
+                color_string = util.colorText.CRED
+                print(color_string + f'lfsr={lfsr_sequence}' + util.colorText.CEND)
+            else: 
+                color_string = util.colorText.CGREEN
+                if err != 0: print(color_string + f'lfsr={lfsr_sequence}' + util.colorText.CEND)
+            print(color_string + f'Result: {freq}, Expecting: {expected_freq}, err: {err}' + util.colorText.CEND)
+
         return err, None, None
 
     else:
@@ -300,11 +445,22 @@ def main(raw_args=None):
     parser.add_argument('--len', type=int, default=None, action='store', help='Set TRNG_BITSTREAM_LENGTH')
     parser.add_argument('--iter', type=int, default=None, action='store', help='Set ITER')
     parser.add_argument('--scheme', type=str, default='majority', action='store', choices=['majority', 'other', 'two_min_term', 'plus_multiply', 'plus_multiply_inverse', 'gaines', 'comparator'], help='Set scheme name')
-    parser.add_argument('--mode', type=str, default='TRNG', action='store', choices=['TRNG', 'dff', 'lfsr'], help='Set RNG mode')
+    parser.add_argument('--mode', type=str, default='TRNG', action='store', choices=['TRNG', 'dff', 'lfsr', 'QUAC'], help='Set RNG mode')
     parser.add_argument('--progress', default=False, action='store_true', help='Print progress')
     args = parser.parse_args(raw_args)
 
     globalVar = util.global_vars(args.prec, args.len, args.iter)
+
+    #######################################
+    # Initialize DRAM entropy source blocks
+    #######################################
+    entropy_sources = None
+    if args.mode == 'QUAC':
+        print("Start initializing DRAM source")
+        entropy_sources = []
+        for i in range(int(1)):
+            entropy_sources.append(trng.DRAMEntropyBlock(SEGMENT_BITLINE_CT, BIAS_CONSTANT))
+        print("Done initializing DRAM source")
 
     #############
     # Computation
@@ -319,7 +475,7 @@ def main(raw_args=None):
         mult_iter = [-1] * globalVar.ITER
         plus_iter = [-1] * globalVar.ITER
         for j in range(globalVar.ITER):
-            err, num_mult, num_plus = compute_err(i, globalVar, args.verbose, args.scheme, args.mode)
+            err, num_mult, num_plus = compute_err(i, globalVar, args.verbose, args.scheme, args.mode, entropy_sources)
             #print(f'mult={num_mult}, plus={num_plus}')
             err_iter[j] = err
             if 'plus_multiply' in args.scheme:

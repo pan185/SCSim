@@ -2,6 +2,7 @@ from scipy.stats import bernoulli
 import numpy as np
 import sys
 from pylfsr import LFSR
+import trng
 
 class global_vars:
     def __init__(self, prec=None, len=None, iter=None):
@@ -21,7 +22,7 @@ class colorText:
     CBLUE = '\033[94m'
     CCYAN = '\033[96m'
 
-def gen_TRNG_bistream(length, mode='TRNG'):
+def gen_TRNG_bistream(length, mode='TRNG', entropy_sources_list=None):
     if length <= 0:
         raise Exception("TRNG bistream length should be greater than 0!")
     if mode == 'TRNG':
@@ -42,12 +43,25 @@ def gen_TRNG_bistream(length, mode='TRNG'):
         bitwidth = int(np.log2(length))
         polylist = LFSR().get_fpolyList(m=bitwidth)
         poly = polylist[np.random.randint(0, len(polylist), 1)[0]] # random seed, random fpoly
-        L = LFSR(fpoly=poly,initstate ='random')
+
+        # Using random state is bad because 0 is also included
+        state = bin(np.random.randint(1, 2**bitwidth, 1)[0])
+        state = state[2::]
+        state = state.zfill(bitwidth)
+        state = list(state)
+        for i in range(bitwidth):
+            state[i] = int(state[i])
+
+        L = LFSR(fpoly=poly,initstate = state)
         #seq = L.runFullCycle()
         seq = L.runKCycle(length)
         assert(length == len(seq))
         #result = L.test_properties(verbose=2)
         return seq
+    elif mode == 'QUAC':
+        if entropy_sources_list == None: 
+            raise Exception('entropy_sources_list cannot be None')
+        return entropy_sources_list[0].get_256_bit_random_bitstream()
 
     else:
         raise Exception(f"Mode {mode} not found!")
@@ -55,7 +69,16 @@ def gen_TRNG_bistream(length, mode='TRNG'):
 def get_lfsr_seq(bitwidth=8):
     polylist = LFSR().get_fpolyList(m=bitwidth)
     poly = polylist[np.random.randint(0, len(polylist), 1)[0]]
-    L = LFSR(fpoly=poly,initstate ='random')
+
+    # Using random state is bad because 0 is also included
+    state = bin(np.random.randint(1, 2**bitwidth, 1)[0])
+    state = state[2::]
+    state = state.zfill(bitwidth)
+    state = list(state)
+    for i in range(bitwidth):
+        state[i] = int(state[i])
+
+    L = LFSR(fpoly=poly,initstate = state)
     lfsr_seq = []
     for i in range(2**bitwidth):
         value = 0
@@ -64,7 +87,7 @@ def get_lfsr_seq(bitwidth=8):
         lfsr_seq.append(value)
         L.next()
     return lfsr_seq
-    
+
 class Bitstream:
     """
     Get bistream result from ANDing n bitstreams
