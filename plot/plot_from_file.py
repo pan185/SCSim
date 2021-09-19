@@ -91,7 +91,7 @@ def main(raw_args = None):
     #axs.grid()
     axs.yaxis.grid()
     axs.xaxis.grid()
-    #axs.text(0.1, 0.5, f'avg={"{:.5f}".format(overall_avg_err)}, max={max_err}', horizontalalignment='left', verticalalignment='center', transform=axs.transAxes)
+    axs.text(0.1, 0.5, f'Note: gaines_QUAC only runs for 10 iterations due to long run time', horizontalalignment='left', verticalalignment='center', transform=axs.transAxes)
     if args.bit == True: 
         axs.set_title("Error in number of bits")
         plt.setp(axs, ylabel='avg error bits')

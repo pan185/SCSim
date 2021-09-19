@@ -7,6 +7,7 @@ sys.path.append('/Users/zhewenpan/Repo/SCSim')
 import util
 import torch
 import trng
+import time
 
 SEGMENT_ENTROPY = 1000 # Use a relatively low number in QUAC-TRNG paper
 SEGMENT_BITLINE_CT = 64 * (2**10) # per 64K bitlines per row
@@ -351,23 +352,22 @@ def compute_err(num_decimal, globalVar, verbose=False, scheme='majority', mode='
         return err, num_mult_op, num_plus_op
     if scheme =='gaines':
         A = []
+        B = []
         for i in range(globalVar.PRECISION_BITS):
             A.append(util.gen_TRNG_bistream(globalVar.TRNG_BITSTREAM_LENGTH, mode, entropy_sources))
-        B = []
-        for j in range(globalVar.PRECISION_BITS):
-            Bj = A[j]
-            for i in range(j):
-                if j != 0:
-                    for t in range(len(A[i])): Bj[t] &= ~A[i][t]
+            Bj = A[i]
+            for m in range(i):
+                # if i != 0:
+                #     for t in range(len(A[m])): Bj[t] &= ~A[m][t]
+                if i != 0: Bj = np.bitwise_and(Bj, np.invert(A[m]))
             B.append(Bj)
         
-        print(len(B))
-        print(len(B[0]))
         stream = [0] * globalVar.TRNG_BITSTREAM_LENGTH
         for index in range(len(num_binary)):
             if num_binary[index] == '1' or num_binary[index] == 1:
-                for i in range(globalVar.TRNG_BITSTREAM_LENGTH):
-                    stream[i] = stream[i] | B[index][i]
+                stream = np.bitwise_or(stream, B[index])
+                # for i in range(globalVar.TRNG_BITSTREAM_LENGTH):
+                #     stream[i] = stream[i] | B[index][i]
         
         num1 = util.Bitstream.count_num_1s(stream)
         freq = num1 / globalVar.TRNG_BITSTREAM_LENGTH
@@ -436,6 +436,8 @@ def dump_vec(arr, scheme, cycle, prec, mode):
     print(f'Dumped vector at {name}')
 
 def main(raw_args=None):
+    start = time.time()
+
     #############
     # argparse
     #############
@@ -470,7 +472,7 @@ def main(raw_args=None):
     numplus_avg_across_ITER = [-1] * 2**globalVar.PRECISION_BITS
 
     for i in range(2**globalVar.PRECISION_BITS):
-        if args.progress: print(util.colorText.CCYAN+ f'Progress {i/(2**globalVar.PRECISION_BITS)*100}%' + util.colorText.CEND)
+        if args.progress: print(util.colorText.CCYAN+ f'Progress {i/(2**globalVar.PRECISION_BITS)*100}% Time {time.time() - start}' + util.colorText.CEND)
         err_iter = [-1] * globalVar.ITER
         mult_iter = [-1] * globalVar.ITER
         plus_iter = [-1] * globalVar.ITER
@@ -576,6 +578,9 @@ def main(raw_args=None):
         
         
         dump_vec(err_avg_across_ITER, args.scheme, globalVar.TRNG_BITSTREAM_LENGTH, globalVar.PRECISION_BITS, args.mode)
+
+        end = time.time()
+        print(end - start)
 
 if __name__ == "__main__":
     main()

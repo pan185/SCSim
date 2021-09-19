@@ -109,10 +109,13 @@ class Bitstream:
         return np.bitwise_or(bs1, bs2)
     
     def count_num_1s(rep):
-        ct = 0
-        for i in rep:
-            if i == '1' or i == 1: ct += 1
-        return ct
+        # ct = 0
+        # for i in rep:
+        #     if i == '1' or i == 1: ct += 1
+        # return ct
+        rep = np.array(rep)
+        #num_ones = (rep == 1 or rep == '1').sum()
+        return rep.sum()
     
     def get_inverse(arr):
         isString = isinstance(arr, str)
